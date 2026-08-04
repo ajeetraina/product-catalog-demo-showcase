@@ -1,0 +1,6 @@
+# Frontend service build context
+node_modules/
+dist/
+.git
+.DS_Store
+*.log

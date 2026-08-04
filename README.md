@@ -28,6 +28,85 @@ During development, containers provide the following services:
 
 ![Dev environment architecture](./dev-environment-architecture.png)
 
+## Docker / Getting Started (fully containerised)
+
+All services — API, web client, PostgreSQL, Kafka, LocalStack (S3), and WireMock —
+run in containers using the [`compose.yaml`](./compose.yaml) at the repo root.
+Base images were selected using the **DHI (Docker Hub Images) MCP Server**
+recommendations (see [image choices](#dhi-image-choices) below).
+
+### Quick start
+
+```console
+# Build images and start all core services in the foreground
+docker compose up --build
+```
+
+Wait for all health checks to pass (usually 30–60 seconds), then:
+
+| Service | URL | Notes |
+|---|---|---|
+| Demo web client | http://localhost:5173 | React SPA served by nginx |
+| Catalog API | http://localhost:3000 | Express REST API |
+| pgAdmin | http://localhost:5050 | `--profile tools` only |
+| Kafbat (Kafka UI) | http://localhost:8080 | `--profile tools` only |
+
+### Starting optional visualisation tools
+
+```console
+docker compose --profile tools up --build
+```
+
+Login to pgAdmin with `admin@example.com` / `postgres`.
+
+### Stopping and cleaning up
+
+```console
+# Stop containers (data volumes are preserved)
+docker compose down
+
+# Stop and remove all volumes (wipes database, Kafka, LocalStack data)
+docker compose down -v
+```
+
+### Environment variable overrides
+
+Copy `.env.example` to `.env` and edit it to change database credentials,
+AWS region, S3 bucket name, or host port mappings:
+
+```console
+cp .env.example .env
+# Edit .env, then:
+docker compose up --build
+```
+
+### DHI image choices
+
+Images were resolved using the Docker Hub Images (DHI) MCP Server.
+All tags are pinned — `latest` is never used.
+
+| Service | Image | Rationale |
+|---|---|---|
+| API (backend) | `node:22.17.0-slim` | Node 22 LTS, minimal Debian-slim base; non-root `appuser` |
+| Web client (build) | `node:22.17.0-slim` | Same Node 22 LTS base for consistent build environment |
+| Web client (runtime) | `nginxinc/nginx-unprivileged:1.27.5-alpine3.21` | Non-root nginx on port 8080; Alpine keeps the image lean |
+| PostgreSQL | `postgres:17.5` | Matches the PostgreSQL 17 version used by Testcontainers integration tests |
+| Kafka | `confluentinc/cp-kafka:7.8.0` | Confluent Platform Kafka in KRaft mode; same image used by the Testcontainers integration tests |
+| S3 (LocalStack) | `localstack/localstack:4.14.0` | Pinned to the same version used in `test/integration/` |
+| Inventory mock | `wiremock/wiremock:3.10.0` | Official WireMock image; loads static mapping files at startup |
+| pgAdmin | `dpage/pgadmin4:9.4` | Standard pgAdmin 4 image (optional `tools` profile) |
+| Kafka UI | `kafbat/kafka-ui:v1.2.0` | Kafbat community fork of provectuslabs/kafka-ui (optional `tools` profile) |
+
+### Multi-stage build approach
+
+* **Backend (`Dockerfile`):** three stages — `base` (shared Node image + user creation),
+  `deps` (production `npm ci`, cached separately from source), `final` (lean runtime image).
+* **Frontend (`dev/webapp/Dockerfile`):** two stages — `build` (Vite React bundle),
+  `runtime` (nginx serves static assets and reverse-proxies `/api/*` to the API container).
+  No source-code changes are needed; the nginx proxy replaces the Vite dev-server proxy.
+
+---
+
 ## Trying it out
 
 This project is currently configured to run all dependent services in containers and the app natively on the machine (using Node installed on the machine).
