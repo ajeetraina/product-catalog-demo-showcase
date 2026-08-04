@@ -1,0 +1,38 @@
+# Backend service build context excludes everything the app
+# does not need at runtime, keeping the image lean.
+
+# VCS & tooling
+.git
+.gitignore
+.vscode/
+.DS_Store
+
+# Dependencies — rebuilt inside the image
+node_modules/
+
+# Dev / demo / test artefacts
+demo/
+dev/
+test/
+coverage/
+
+# Images & media
+*.png
+
+# Documentation
+*.md
+LICENSE
+
+# Environment overrides (never bake secrets into images)
+.env
+.env.*
+!.env.example
+
+# npm / yarn logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Misc
+*.log
+package-lock.json.bak

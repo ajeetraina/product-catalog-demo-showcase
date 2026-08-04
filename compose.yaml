@@ -1,0 +1,240 @@
+# Product Catalog Demo — Docker Compose
+#
+# Runs the full application stack in containers.
+# All services use pinned image versions selected via the
+# DHI (Docker Hub Images) MCP Server recommendations.
+#
+# Usage:
+#   docker compose up --build          # core services (API + webapp + deps)
+#   docker compose --profile tools up  # also start pgAdmin and Kafbat UI
+
+name: product-catalog
+
+services:
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Catalog Service — Node.js / Express REST API  (http://localhost:3000)
+  # Built from the repo root Dockerfile (multi-stage, non-root appuser).
+  # DHI base image: node:22.17.0-slim
+  # ───────────────────────────────────────────────────────────────────────────
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: final
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    environment:
+      # ── PostgreSQL (pg library reads these standard vars automatically) ──
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGUSER: "${POSTGRES_USER:-postgres}"
+      PGPASSWORD: "${POSTGRES_PASSWORD:-postgres}"
+      PGDATABASE: "${POSTGRES_DB:-catalog}"
+      # ── LocalStack / S3 ──────────────────────────────────────────────────
+      AWS_ENDPOINT_URL: "http://localstack:4566"
+      AWS_REGION: "${AWS_REGION:-us-east-1}"
+      AWS_ACCESS_KEY_ID: "${AWS_ACCESS_KEY_ID:-test}"
+      AWS_SECRET_ACCESS_KEY: "${AWS_SECRET_ACCESS_KEY:-test}"
+      PRODUCT_IMAGE_BUCKET_NAME: "${PRODUCT_IMAGE_BUCKET_NAME:-product-images}"
+      # ── Kafka ────────────────────────────────────────────────────────────
+      KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+      # ── WireMock (mock inventory service) ────────────────────────────────
+      INVENTORY_SERVICE_BASE_URL: "http://wiremock:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+      wiremock:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - "CMD"
+        - "node"
+        - "-e"
+        - "require('http').get('http://localhost:3000/', (r) => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    restart: unless-stopped
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Demo Web Client — React / Vite, served by nginx  (http://localhost:5173)
+  # Built from dev/webapp/Dockerfile (multi-stage: node build → nginx runtime).
+  # DHI base images: node:22.17.0-slim (build) · nginxinc/nginx-unprivileged:1.27-alpine3.22 (runtime)
+  # Nginx proxies /api/* → http://app:3000 so no code changes are needed.
+  # ───────────────────────────────────────────────────────────────────────────
+  webapp:
+    build:
+      context: ./dev/webapp
+      dockerfile: Dockerfile
+      target: runtime
+    ports:
+      - "${WEBAPP_PORT:-5173}:8080"
+    depends_on:
+      app:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "wget --quiet --tries=1 --spider http://localhost:8080/ || exit 1"
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # PostgreSQL 17  (DHI recommendation: postgres:17.5)
+  # Initialised from dev/db/1-create-schema.sql via entrypoint init dir.
+  # ───────────────────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:17.5
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER:-postgres}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-postgres}"
+      POSTGRES_DB: "${POSTGRES_DB:-catalog}"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # SQL files in this directory are executed in alphabetical order
+      # on the first startup (when the data directory is empty).
+      - ./dev/db:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      # $$VAR: $$ tells compose to pass a literal $ to the container shell,
+      # which then expands $POSTGRES_USER / $POSTGRES_DB from the container env.
+      test:
+        - "CMD-SHELL"
+        - "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"
+      interval: 5s
+      timeout: 3s
+      start_period: 10s
+      retries: 5
+    restart: unless-stopped
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Kafka 7.8 (Confluent Platform) — KRaft single-node broker (no ZooKeeper)
+  # DHI recommendation: confluentinc/cp-kafka:7.8.0
+  # Same image used by the Testcontainers integration tests. KRaft mode
+  # requires a pre-generated CLUSTER_ID (static value is fine for local dev).
+  # Auto-creates the "products" topic used by the catalog service.
+  # ───────────────────────────────────────────────────────────────────────────
+  kafka:
+    image: confluentinc/cp-kafka:7.8.0
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: "PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      # Required for KRaft mode — a stable base64-encoded UUID used as cluster ID
+      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "kafka-topics --bootstrap-server localhost:9092 --list >/dev/null 2>&1"
+      interval: 10s
+      timeout: 10s
+      start_period: 30s
+      retries: 5
+    restart: unless-stopped
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # LocalStack — AWS S3 emulator   (DHI: localstack/localstack:4.14.0)
+  # The init-s3.sh ready-hook creates the product-images bucket automatically.
+  # The healthcheck waits until the bucket exists before declaring healthy,
+  # preventing the app from starting before the bucket is ready.
+  # ───────────────────────────────────────────────────────────────────────────
+  localstack:
+    image: localstack/localstack:4.14.0
+    environment:
+      SERVICES: s3
+      PRODUCT_IMAGE_BUCKET_NAME: "${PRODUCT_IMAGE_BUCKET_NAME:-product-images}"
+      AWS_DEFAULT_REGION: "${AWS_REGION:-us-east-1}"
+    volumes:
+      - ./dev/localstack:/etc/localstack/init/ready.d:ro
+      - localstack_data:/var/lib/localstack
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "awslocal s3api head-bucket --bucket ${PRODUCT_IMAGE_BUCKET_NAME:-product-images}"
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 10
+    restart: unless-stopped
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # WireMock — mock external inventory service  (DHI: wiremock/wiremock:3.10.0)
+  # Mappings from dev/inventory-mocks/mappings/ are loaded at startup.
+  # ───────────────────────────────────────────────────────────────────────────
+  wiremock:
+    image: wiremock/wiremock:3.10.0
+    volumes:
+      - ./dev/inventory-mocks/mappings:/home/wiremock/mappings:ro
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "wget --quiet --tries=1 -O /dev/null http://localhost:8080/__admin/health"
+      interval: 5s
+      timeout: 3s
+      start_period: 15s
+      retries: 5
+    restart: unless-stopped
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # pgAdmin 4 — PostgreSQL UI  (http://localhost:5050)  [profile: tools]
+  # Start with:  docker compose --profile tools up
+  # Login: admin@example.com / postgres  (override via .env)
+  # DHI recommendation: dpage/pgadmin4:9.4
+  # ───────────────────────────────────────────────────────────────────────────
+  pgadmin:
+    image: dpage/pgadmin4:9.4
+    profiles: [tools]
+    environment:
+      PGADMIN_DEFAULT_EMAIL: "${PGADMIN_EMAIL:-admin@example.com}"
+      PGADMIN_DEFAULT_PASSWORD: "${PGADMIN_PASSWORD:-postgres}"
+    ports:
+      - "${PGADMIN_PORT:-5050}:80"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Kafbat (Kafka UI) — Kafka visualiser  (http://localhost:8080) [profile: tools]
+  # Start with:  docker compose --profile tools up
+  # DHI recommendation: kafbat/kafka-ui:v1.2.0
+  # ───────────────────────────────────────────────────────────────────────────
+  kafka-ui:
+    image: kafbat/kafka-ui:v1.2.0
+    profiles: [tools]
+    ports:
+      - "${KAFBAT_PORT:-8080}:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: "kafka:9092"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Named volumes — data is persisted across restarts
+# ─────────────────────────────────────────────────────────────────────────────
+volumes:
+  postgres_data:
+  kafka_data:
+  localstack_data:
