@@ -1,0 +1,16 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "/api/inventory?upc=100000000002"
+  },
+  "response": {
+    "status": 200,
+    "jsonBody": {
+      "id": 123,
+      "quantity": 15
+    },
+    "headers": {
+      "Content-Type": "application/json"
+    }
+  }
+}
