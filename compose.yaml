@@ -20,11 +20,16 @@ services:
       AWS_ENDPOINT_URL: http://aws:4566
       PRODUCT_IMAGE_BUCKET_NAME: product-images
       INVENTORY_SERVICE_BASE_URL: http://mock-inventory:8080
+    restart: on-failure
     depends_on:
-      - postgres
-      - kafka
-      - aws
-      - mock-inventory
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+      aws:
+        condition: service_started
+      mock-inventory:
+        condition: service_started
 
   ################## DEMO WEB CLIENT ##################
   demo-client:
@@ -43,10 +48,17 @@ services:
       - "5432:5432"
     volumes:
       - ./dev/db:/docker-entrypoint-initdb.d
+      - pgdata:/var/lib/postgresql/data
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: catalog
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d catalog"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
 
   pgadmin:
     image: dpage/pgadmin4:9.14.0
@@ -120,6 +132,9 @@ services:
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9093
     depends_on:
       - kafka
+
+volumes:
+  pgdata:
 
 configs:
   pgadmin-pgpass:
