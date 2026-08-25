@@ -1,10 +1,19 @@
 services:
 
   ################## CATALOG SERVICE (this app) ##################
+  # Requires Docker Hardened Images (DHI) access to build.
+  # Community: docker login dhi.io  then  docker compose build
+  # Mirrored org: pass build args to override the image refs, e.g.
+  #   docker compose build --build-arg DHI_DEV_IMAGE=docker.io/<org>/dhi-node:22-debian12-dev \
+  #                         --build-arg DHI_RUNTIME_IMAGE=docker.io/<org>/dhi-node:22-debian12
   app:
     build:
       context: .
       target: final
+      # Override only when using a mirrored org namespace:
+      # args:
+      #   DHI_DEV_IMAGE: docker.io/<org>/dhi-node:22-debian12-dev
+      #   DHI_RUNTIME_IMAGE: docker.io/<org>/dhi-node:22-debian12
     ports:
       - 3000:3000
     environment:

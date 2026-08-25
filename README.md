@@ -26,6 +26,32 @@ During development, containers provide the following services:
 - WireMock is used to mock the external inventory service
 - pgAdmin and kafbat are added to visualize the PostgreSQL database and Kafka cluster
 
+## Running with Docker
+
+The container images are built from **Docker Hardened Images (DHI)** — near-zero-CVE, minimal Node.js images.
+
+### Prerequisite: DHI authentication
+
+Before building, authenticate with the DHI registry:
+
+```bash
+# Community tier (dhi.io):
+docker login dhi.io
+
+# Select / Enterprise (mirrored to your org):
+docker compose build \
+  --build-arg DHI_DEV_IMAGE=docker.io/<org>/dhi-node:22-debian12-dev \
+  --build-arg DHI_RUNTIME_IMAGE=docker.io/<org>/dhi-node:22-debian12
+```
+
+### Start the full stack
+
+```bash
+docker compose up --build
+```
+
+The catalog API is available at <http://localhost:3000>.
+
 ![Dev environment architecture](./dev-environment-architecture.png)
 
 

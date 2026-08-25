@@ -13,3 +13,4 @@ demo
 .env*
 README.md
 LICENSE
+gha.env
