@@ -1,0 +1,166 @@
+services:
+
+  ################## CATALOG SERVICE (this app) ##################
+  # Requires Docker Hardened Images (DHI) access to build.
+  # Community: docker login dhi.io  then  docker compose build
+  # Mirrored org: pass build args to override the image refs, e.g.
+  #   docker compose build --build-arg DHI_DEV_IMAGE=docker.io/<org>/dhi-node:22-debian12-dev \
+  #                         --build-arg DHI_RUNTIME_IMAGE=docker.io/<org>/dhi-node:22-debian12
+  app:
+    build:
+      context: .
+      target: final
+      # Override only when using a mirrored org namespace:
+      # args:
+      #   DHI_DEV_IMAGE: docker.io/<org>/dhi-node:22-debian12-dev
+      #   DHI_RUNTIME_IMAGE: docker.io/<org>/dhi-node:22-debian12
+    ports:
+      - 3000:3000
+    environment:
+      PGHOST: postgres
+      PGPORT: 5432
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: catalog
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9093
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_ENDPOINT_URL: http://aws:4566
+      PRODUCT_IMAGE_BUCKET_NAME: product-images
+      INVENTORY_SERVICE_BASE_URL: http://mock-inventory:8080
+    restart: on-failure
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+      aws:
+        condition: service_started
+      mock-inventory:
+        condition: service_started
+
+  ################## DEMO WEB CLIENT ##################
+  demo-client:
+    image: node:lts-slim
+    working_dir: /usr/local/app
+    command: yarn dev
+    ports:
+      - 5173:5173
+    volumes:
+      - ./dev/webapp:/usr/local/app
+
+  ############## DATABASE AND VISUALIZER ##############
+  postgres:
+    image: postgres:17.9
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./dev/db:/docker-entrypoint-initdb.d
+      - pgdata:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: catalog
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d catalog"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  pgadmin:
+    image: dpage/pgadmin4:9.14.0
+    ports:
+      - "5050:80"
+    configs:
+      - source: pgadmin-pgpass
+        target: /config/pgpass
+        uid: "5050"
+        gid: "5050"
+        mode: 0400
+      - source: pgadmin-servers
+        target: /pgadmin4/servers.json
+        mode: 0444
+    environment:
+      PGADMIN_DEFAULT_EMAIL: pgadmin@mycomp.com
+      PGADMIN_DEFAULT_PASSWORD: secret
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: 'False'
+    depends_on:
+      - postgres
+
+  ############## LOCAL AWS ##############
+  aws:
+    image: localstack/localstack:4.14.0
+    ports:
+      - "4566:4566"
+    post_start:
+      - command: awslocal s3api create-bucket --bucket product-images
+
+  ############## MOCK INVENTORY SERVICE ##############
+  mock-inventory:
+    image: wiremock/wiremock:3.12.1
+    ports:
+      - 8090:8080
+    volumes:
+      - ./dev/inventory-mocks:/home/wiremock
+
+  ############## KAFKA AND VISUALIZATION ##############
+  kafka:
+    image: apache/kafka:4.0.0
+    ports:
+      - 9092:9092
+    environment:
+      # Configure listeners for both docker and host communication
+      KAFKA_LISTENERS: CONTROLLER://localhost:9091,HOST://0.0.0.0:9092,DOCKER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: HOST://localhost:9092,DOCKER://kafka:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,DOCKER:PLAINTEXT,HOST:PLAINTEXT
+
+      # Settings required for KRaft mode
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9091
+
+      # Listener to use for broker-to-broker communication
+      KAFKA_INTER_BROKER_LISTENER_NAME: DOCKER
+
+      # Required for a single node cluster
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    post_start:
+      - command: /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --topic products --partitions 1 --replication-factor 1 --bootstrap-server kafka:9093
+
+  kafka-ui:
+    image: kafbat/kafka-ui:v1.2.0
+    ports:
+      - 8080:8080
+    environment:
+      DYNAMIC_CONFIG_ENABLED: 'true'
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9093
+    depends_on:
+      - kafka
+
+volumes:
+  pgdata:
+
+configs:
+  pgadmin-pgpass:
+    content: |
+      *:*:*:postgres:postgres
+  pgadmin-servers:
+    content: |
+      {
+        "Servers": {
+          "1": {
+            "Name": "Local Postgres",
+            "Group": "Servers",
+            "Host": "postgres",
+            "Port": 5432,
+            "MaintenanceDB": "postgres",
+            "Username": "postgres",
+            "PassFile": "/config/pgpass"
+          }
+        }
+      }
